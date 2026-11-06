@@ -357,7 +357,7 @@ class MVM_OT_live_start(bpy.types.Operator):
                 except Exception as e:
                     s.live_status = f"preview load failed: {e}"[:120]; continue
                 txt = f"{st['triangles']} tris, {st['total_s']} s"
-                for k, lab in (("silhouette_iou", "outline IoU {}"), ("faces_vs_maps_deg", "vs maps {} deg"), ("folded_pct", "folded {} %"), ("unseen_pct", "unseen {} %")):
+                for k, lab in (("silhouette_iou", "outline IoU {}"), ("faces_vs_maps_deg", "vs maps {} deg"), ("folded_pct", "folded {} %"), ("unseen_pct", "unseen {} %"), ("open_edges", "open edges {}")):
                     if k in st:
                         txt += ", " + lab.format(st[k])
                 s.live_status = txt; s.live_progress = 1.0; update_overlay(s)
@@ -497,11 +497,11 @@ class MVM_Settings(bpy.types.PropertyGroup):
                                                      ("BEST", "Best", "10 steps x 5, slow")], default="NORMAL")
     relief_inverted: BoolProperty(default=False)
     trim_outside: BoolProperty(name="Trim outside silhouettes", default=True, update=mark_dirty,
-                               description="All methods: cut triangles that stick out of the silhouette of any view by more than 2 px "
-                                           "(thin slivers attached to the body). The real surface is inside all silhouettes")
+                               description="All methods: remove geometry that sticks out of the silhouettes by more than 2 % of the height (background left by a "
+                                           "generator, spikes). Small deviations are left alone, the holes the cut opens are closed, and nothing is cut if it would take over half the mesh")
     clean_floating: BoolProperty(name="Remove floating parts", default=True, update=mark_dirty,
-                                 description="All methods: delete pieces of the mesh that are not connected to the body (slivers, crumbs in the air). "
-                                             "Separate parts at least 1 % of the main body are kept")
+                                 description="All methods: delete detached pieces only when they are proven junk (crumbs, or mostly outside the silhouettes). "
+                                             "Separate parts inside the silhouettes stay, however small")
     bake_clay: BoolProperty(name="Convert to clay before baking", default=False,
                             description="Remove the colours of every view (albedo of each material divided out) so the generators see only shading, like a white clay render. "
                                         "Saved as clay_XXX.png. Painted lines stay; dark materials give noisier shading")
@@ -510,6 +510,8 @@ class MVM_Settings(bpy.types.PropertyGroup):
                                            "Can also flatten useful relief - check the maps sheet")
     # game mesh
     poly_limit: IntProperty(name="Polygon limit", default=70000, min=1000, max=2000000)
+    allow_exceed: BoolProperty(name="Allow exceeding limit", default=True,
+                               description="If decimation to the limit would open holes or split parts, use a higher polygon count instead of damaging the mesh")
     keep_copy: BoolProperty(name="Keep full copy", default=True, description="Copy before decimation, for normal-map baking")
     # display
     show_underlay: BoolProperty(name="Show start mesh", default=False, update=_show_underlay)
@@ -819,18 +821,57 @@ class MVM_OT_invert_relief(bpy.types.Operator):
         start_job([[sys.executable, os.path.join(CORE, "invert_maps.py")] + files], on_done=done); return {"FINISHED"}
 
 
+def _mesh_check():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mvm_mesh_check", os.path.join(CORE, "mesh_check.py"))
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod
+
+
+def integrity(me):
+    """open (boundary) edges, non-manifold edges, separate parts and triangles of a Blender mesh"""
+    mc = _mesh_check(); ne = len(me.edges)
+    li = np.empty(len(me.loops), np.int32); me.loops.foreach_get("edge_index", li)
+    cnt = np.bincount(li, minlength=ne)
+    ev = np.empty(ne * 2, np.int32); me.edges.foreach_get("vertices", ev); ev = ev.reshape(-1, 2)[cnt > 0]
+    lab = mc.vertex_components(ev.astype(np.int64), len(me.vertices)) if len(ev) else np.zeros(0, np.int64)
+    parts = len(np.unique(lab[np.unique(ev)])) if len(ev) else 0
+    return {"open": int((cnt == 1).sum()), "nonmanifold": int((cnt > 2).sum()), "parts": parts, "tris": len(me.polygons)}
+
+
+def _integrity_text(i):
+    return f"{i['tris']} tris, {i['open']} open edges, {i['parts']} parts"
+
+
 class MVM_OT_reduce(bpy.types.Operator):
     bl_idname = "mvm.reduce"; bl_label = "Reduce to limit"
-    bl_description = "Decimate modifier on the result to the polygon limit (bake the detail from the full copy afterwards)"
+    bl_description = ("Decimate modifier towards the polygon limit. The mesh is checked before and after: if decimation opens holes or splits parts, "
+                      "the ratio is raised (the limit may be exceeded when 'Allow exceeding limit' is on). The full copy is kept for baking")
     def execute(self, context):
         s = context.scene.mvm; obj = bpy.data.objects.get(RESULT) or bpy.data.objects.get(PREVIEW)
         if obj is None:
             self.report({"ERROR"}, "build the mesh first"); return {"CANCELLED"}
         if s.keep_copy and bpy.data.objects.get(obj.name + "_full") is None:
             c = obj.copy(); c.data = obj.data.copy(); c.name = obj.name + "_full"; context.scene.collection.objects.link(c); c.hide_viewport = True
-        tris = len(obj.data.polygons); mod = obj.modifiers.get("MVM_Limit") or obj.modifiers.new("MVM_Limit", "DECIMATE")
-        mod.decimate_type = "COLLAPSE"; mod.ratio = min(1.0, s.poly_limit / max(1, tris)); mod.use_collapse_triangulate = True
-        self.report({"INFO"}, f"{tris} -> ~{int(tris * mod.ratio)} triangles"); return {"FINISHED"}
+        base = integrity(obj.data); tris = base["tris"]
+        mod = obj.modifiers.get("MVM_Limit") or obj.modifiers.new("MVM_Limit", "DECIMATE")
+        mod.decimate_type = "COLLAPSE"; mod.use_collapse_triangulate = True
+        ratio = min(1.0, s.poly_limit / max(1, tris)); after = base
+        for _ in range(8):
+            mod.ratio = min(1.0, ratio); context.view_layer.update()
+            ev = obj.evaluated_get(context.evaluated_depsgraph_get()); me = ev.to_mesh()
+            try:
+                after = integrity(me)
+            finally:
+                ev.to_mesh_clear()
+            ok = after["open"] <= base["open"] and after["nonmanifold"] <= base["nonmanifold"] and after["parts"] <= base["parts"]
+            if ok or not s.allow_exceed or mod.ratio >= 1.0:
+                break
+            ratio *= 1.3
+        msg = f"before: {_integrity_text(base)}; after: {_integrity_text(after)}"
+        worse = after["open"] > base["open"] or after["nonmanifold"] > base["nonmanifold"] or after["parts"] > base["parts"]
+        if after["tris"] > s.poly_limit:
+            msg += f"; limit {s.poly_limit} exceeded to keep the mesh intact" if not worse else f"; limit {s.poly_limit} exceeded"
+        self.report({"WARNING"} if worse or after["tris"] > s.poly_limit else {"INFO"}, msg); return {"FINISHED"}
 
 
 # =============================================================================================== clear cache
@@ -1143,7 +1184,7 @@ class MVM_PT_game(_P, bpy.types.Panel):
     bl_label = "Game mesh"; bl_parent_id = "MVM_PT_main"; bl_options = {"DEFAULT_CLOSED"}
     def draw(self, context):
         s = context.scene.mvm; L = self.layout
-        L.prop(s, "poly_limit"); L.prop(s, "keep_copy"); L.operator("mvm.reduce", icon="MOD_DECIM")
+        L.prop(s, "poly_limit"); L.prop(s, "allow_exceed"); L.prop(s, "keep_copy"); L.operator("mvm.reduce", icon="MOD_DECIM")
 
 
 class MVM_PT_clear(_P, bpy.types.Panel):

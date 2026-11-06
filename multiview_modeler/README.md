@@ -20,7 +20,7 @@ Builds a dense mesh of a character or object from multi-view maps. Workflow:
    - volume sliders take a few seconds;
    - every preview fit iteration takes a few more seconds.
 4. When the preview looks right, press **Final build**: the same settings at full resolution. The result is `MVM_Result`, the start mesh is `MVM_Underlay`.
-5. **Game mesh → Reduce to limit** — Decimate down to a limit. A full copy is kept for baking.
+5. **Game mesh → Reduce to limit** — Decimate towards the limit. The mesh is checked before and after (open edges, non-manifold edges, separate parts); if decimation would open holes or split parts, the ratio is raised and the limit is exceeded (turn off **Allow exceeding limit** to force the limit). The result is reported. A full copy is kept for baking.
 
 ### Panel layout
 
@@ -38,8 +38,10 @@ Controls that did not improve results in tests were removed and fixed to the tes
 **Display → Highlight** shows where the mesh disagrees with the maps (*Disagreement with views*) and what no view sees (*Guessed areas*). **Reset** restores the tested values.
 
 Two checkboxes in the main panel clean the result in both the live preview and the final build:
-- **Trim outside** cuts off parts that stick out of the view silhouettes;
-- **Remove floating** deletes small disconnected pieces.
+- **Trim outside** removes geometry that sticks out of the silhouettes by more than 2 % of the height (for example the background a generator leaves around the character). Triangles are cut only when they lie fully outside; small deviations stay; the holes a cut opens are closed; nothing is cut if it would take over half of the mesh;
+- **Remove floating** deletes a detached piece only when it is proven junk: a crumb, or mostly outside the silhouettes. Small separate parts inside the silhouettes (clips, ribbons) stay.
+
+Before and after the cleanup the log reports triangles, open edges and separate parts, and the live status shows the number of open edges.
 
 ## Neural start (Hunyuan3D 2.0)
 

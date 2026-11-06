@@ -9,7 +9,7 @@ A Blender add-on that automates building a dense 3D mesh of a character or objec
   1. *Volume from views*: silhouettes and normal maps of all views, then a fit to every map at once.
   2. *Hunyuan3D start*: a neural start mesh from a colour image (Hunyuan3D 2.0 shape model), aligned and fitted to your views.
   3. *Depth + normals*: depth and normal map of every view, fused into a volume with sub-voxel surface extraction.
-- **Cleans the result.** Trims geometry that sticks out of the view silhouettes and removes floating pieces, in the live preview and in the final build.
+- **Cleans the result.** Trims geometry that sticks out of the view silhouettes without opening holes, removes floating pieces only when they are proven junk, and reports open edges and separate parts. Works in the live preview and in the final build.
 - **Live preview and final build** with progress reporting, a reset button for every method, and a cache-clearing button for downloaded models and temporary files.
 
 The heavy computation runs in separate processes (CPU for the fit, GPU for the neural parts), so Blender stays responsive and its own Python is never modified.

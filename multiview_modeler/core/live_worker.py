@@ -18,15 +18,36 @@ from skimage import measure
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from normals_volume import load_view, align, decode_normals, integrate, refine_offsets, vnormals   # noqa: E402
+import mesh_check as mc                                                                       # noqa: E402
 import multiview_fit as mvf                                                                   # noqa: E402
 from par import pmap                                                                           # noqa: E402
 
 MARGIN = 0.045
 
 
-def clean_floating(V, F, keep=0.01):
-    """drop mesh pieces that are not connected to the body: keep every connected part with at least `keep` of the
-    faces of the biggest part (thin slivers and crumbs in the air go, real separate parts of similar size stay)"""
+def _excess(P, masks, H):
+    """how far each point is outside the silhouettes, as a fraction of the height; the worst view counts, 0 = inside all"""
+    from silhouette_fit import project
+    out = np.zeros(len(P))
+    for a, m in masks.items():
+        R = m.shape[0]; dist = ndimage.distance_transform_edt(~m)
+        col, row, *_ = project(P, a, H, R)
+        ci = np.clip(np.round(col).astype(int), 0, R - 1); ri = np.clip(np.round(row).astype(int), 0, R - 1)
+        over = np.hypot(col - ci, row - ri)                        # how far beyond the image frame the point is
+        out = np.maximum(out, (dist[ri, ci] + over) / (R * (1 - 2 * MARGIN)))
+    return out
+
+
+def _keep_used(V, F, keep_tri):
+    Fk = F[keep_tri]; used = np.unique(Fk); remap = -np.ones(len(V), np.int64); remap[used] = np.arange(len(used))
+    return V[used], remap[Fk]
+
+
+def clean_floating(V, F, keep=0.003, masks=None, H=None, tol=0.01, tiny=0.0005, log=None):
+    """remove detached pieces only when they are proven junk. A piece other than the biggest is dropped if it is a crumb
+    (under `tiny` of the biggest piece or under 8 triangles) or, when silhouettes are known, if most of it lies outside
+    the silhouettes by more than `tol` (fraction of height). Without silhouettes only pieces under `keep` of the biggest go.
+    Separate real parts (hair clip, ribbon, earring) inside the silhouettes stay, however small."""
     from scipy.sparse.csgraph import connected_components
     if len(F) == 0:
         return V, F
@@ -35,26 +56,68 @@ def clean_floating(V, F, keep=0.01):
     nc, lab = connected_components(A, directed=False)
     if nc <= 1:
         return V, F
-    fl = lab[F[:, 0]]; cnt = np.bincount(fl, minlength=nc); good = cnt >= keep * cnt.max()
-    Fk = F[good[fl]]; used = np.unique(Fk); remap = -np.ones(n, np.int64); remap[used] = np.arange(len(used))
-    return V[used], remap[Fk]
+    fl = lab[F[:, 0]]; cnt = np.bincount(fl, minlength=nc); big = cnt.max(); drop = (cnt < 8) | (cnt < tiny * big)
+    if masks and H:
+        C = V[F].mean(1); out = _excess(C, masks, H) > tol
+        frac = np.bincount(fl, weights=out.astype(float), minlength=nc) / np.maximum(cnt, 1)
+        drop |= frac > 0.5
+    else:
+        drop |= cnt < keep * big
+    drop[np.argmax(cnt)] = False
+    if log:
+        log(f"STATUS floating parts: {int(drop.sum())} removed, {int(((cnt > 0) & ~drop).sum()) - 1} small parts kept")
+    return _keep_used(V, F, ~drop[fl])
 
 
-def trim_outside(V, F, masks, H, tol_px=2):
-    """cut every triangle whose centre lies outside the silhouette of any view by more than tol_px pixels
-    (the real surface is inside all silhouettes); masks: {angle: R x R bool} in the plugin frame"""
-    from silhouette_fit import project
+def trim_outside(V, F, masks, H, tol=0.01, hard=None, max_removed=0.5, fill_max=400, log=None):
+    """cut geometry that sticks out of the silhouettes without opening holes in the body.
+    - a triangle is a candidate only if all its corners and its centre are outside some silhouette by more than `tol`
+      (fraction of height, 1 % by default; the old fixed 2 px cut the real surface whenever a view was slightly off);
+    - candidates are grouped into connected pieces; a piece is removed only if its worst point is outside by more than
+      `hard` (2 x tol by default). Borderline pieces stay;
+    - if removal would take more than `max_removed` of the mesh the silhouettes are probably wrong and nothing is cut;
+    - the holes the cut opens (new open edges) are closed with a fan up to `fill_max` edges; larger ones are reported.
+    masks: {angle: R x R bool} in the plugin frame"""
     if len(F) == 0 or not masks:
         return V, F
-    C = V[F].mean(1); bad = np.zeros(len(F), bool)
-    for a, m in masks.items():
-        R = m.shape[0]; md = ndimage.binary_dilation(m, iterations=int(tol_px)) if tol_px > 0 else m
-        col, row, *_ = project(C, a, H, R)
-        ci = np.round(col).astype(int); ri = np.round(row).astype(int)
-        inside = (ci >= 0) & (ci < R) & (ri >= 0) & (ri < R)
-        bad |= ~inside | ~md[np.clip(ri, 0, R - 1), np.clip(ci, 0, R - 1)]
-    Fk = F[~bad]; used = np.unique(Fk); remap = -np.ones(len(V), np.int64); remap[used] = np.arange(len(used))
-    return V[used], remap[Fk]
+    hard = 2 * tol if hard is None else hard
+    exc_v = _excess(V, masks, H); C = V[F].mean(1); exc_c = _excess(C, masks, H)
+    cand = (exc_v[F].min(1) > tol) & (exc_c > tol)
+    if not cand.any():
+        return V, F
+    lab, k = mc.component_labels(F[cand], len(V)); depth = np.zeros(k)
+    np.maximum.at(depth, lab, np.maximum(exc_c[cand], exc_v[F[cand]].max(1)))
+    cut = np.zeros(len(F), bool); cut[np.flatnonzero(cand)[depth[lab] > hard]] = True
+    if cut.mean() > max_removed:
+        if log:
+            log(f"STATUS trim skipped: it would remove {100 * cut.mean():.0f} % of the mesh, check the silhouettes")
+        return V, F
+    old_keys, _ = mc.boundary_keys(F, len(V))
+    V2, F2 = _keep_used(V, F, ~cut)
+    # the open edges of the original mesh must be translated to the compacted vertex numbering
+    used = np.unique(F[~cut]); remap = -np.ones(len(V), np.int64); remap[used] = np.arange(len(used))
+    base_o = len(V) + 1; ok = old_keys; a0, b0 = ok // base_o, ok % base_o
+    keep_e = (remap[a0] >= 0) & (remap[b0] >= 0); a1, b1 = remap[a0[keep_e]], remap[b0[keep_e]]
+    old2 = np.minimum(a1, b1) * (len(V2) + 1) + np.maximum(a1, b1)
+    V3, F3, filled, left = mc.fill_new_holes(V2, F2, old2, fill_max)
+    if log:
+        log(f"STATUS trim: {int(cut.sum())} triangles removed in {int((depth > hard).sum())} pieces, "
+            f"{filled} holes closed, {left} large openings left")
+    return V3, F3
+
+
+def cleanup(V, F, B, H, p):
+    """trim + floating-part removal with integrity reports before and after (the mesh must not get new holes)"""
+    V, F = np.asarray(V), np.asarray(F); masks = getattr(B, "last_masks", {})
+    before = mc.report(V, F); say("STATUS mesh before cleanup: " + mc.fmt(before))
+    if p.get("trim", True):
+        V, F = trim_outside(V, F, masks, H, log=say)
+    if p.get("clean", True):
+        V, F = clean_floating(V, F, masks=masks, H=H, log=say)
+    after = mc.report(V, F); say("STATUS mesh after cleanup: " + mc.fmt(after))
+    if after["open_edges"] > before["open_edges"]:
+        say(f"STATUS warning: cleanup left {after['open_edges'] - before['open_edges']} more open edges than before")
+    return V, F
 
 
 def _mt(p):
@@ -454,10 +517,8 @@ def live():
                     V, F, s_ = mvf.fit_step(V, F, maps, H, lam, p["mu"], p["agree"], p["relax"])
                     st["faces_vs_maps_deg"] = s_["median_face_vs_maps_deg"]
                 st["folded_pct"] = round(100 * mvf.folded_share(V, F), 2)
-            if p.get("trim", True):
-                V, F = trim_outside(np.asarray(V), np.asarray(F), getattr(B, "last_masks", {}), H)
-            if p.get("clean", True):
-                V, F = clean_floating(np.asarray(V), np.asarray(F))
+            V, F = cleanup(V, F, B, H, p)
+            rep = mc.report(V, F); st["open_edges"] = rep["open_edges"]; st["parts"] = rep["components"]
             extra = {}
             if p.get("diag"):
                 ve, vs = mvf.observe(V, F, maps, H, p["agree"], vertex=True); extra = {"err": ve, "seen": vs}
@@ -487,12 +548,9 @@ def final(job_path):
     if getattr(B, "sil_iou", None):
         say(f"silhouette IoU {B.sil_iou[0]} -> {B.sil_iou[1]}")
     n0 = len(F)
-    if req["p"].get("trim", True):
-        V, F = trim_outside(np.asarray(V), np.asarray(F), getattr(B, "last_masks", {}), float(req["height"]))
-    if req["p"].get("clean", True):
-        V, F = clean_floating(np.asarray(V), np.asarray(F))
+    V, F = cleanup(V, F, B, float(req["height"]), req["p"])
     if n0 != len(F):
-        say(f"STATUS outside / floating parts removed: {n0 - len(F)} triangles")
+        say(f"STATUS outside / floating parts: {n0} -> {len(F)} triangles")
     np.savez(os.path.join(wd, "underlay.npz"), V=V.astype(np.float32), F=F.astype(np.int32))
     say(f"underlay.obj: {len(V)} verts, {len(F)} tris")
     for a, (m, n) in ({} if req.get("no_fit_maps") else B.fit_maps(req, int(req.get("fit_res", 2048)), R)).items():
