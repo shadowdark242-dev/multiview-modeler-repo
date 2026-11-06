@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.zip
+mvm_work/
+*.blend1
+CLAUDE.md
