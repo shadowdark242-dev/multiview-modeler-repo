@@ -14,6 +14,12 @@ A Blender add-on that automates building a dense 3D mesh of a character or objec
 
 The heavy computation runs in separate processes (CPU for the fit, GPU for the neural parts), so Blender stays responsive and its own Python is never modified.
 
+## Example
+
+A start mesh made with method 2 (Hunyuan3D 2 multi-view, front, left and back colour images), shown in the live preview with the fit to normal maps switched off and the silhouette fit off. This is one result on one test character, not a general guarantee.
+
+<p align="center"><img src="docs/images/hunyuan-start-example.png" alt="Multiview Modeler panel and a Hunyuan3D start mesh in Blender" width="720"></p>
+
 ## Requirements
 
 - Blender 3.6 or newer is declared by the add-on; it has been tested only with Blender 5.2 on Windows 11.
