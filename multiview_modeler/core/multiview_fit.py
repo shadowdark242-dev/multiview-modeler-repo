@@ -65,7 +65,7 @@ def load_maps(specs):
 
 def one_iteration(a):
     V, F = load_npz(a.inp); maps = load_maps(a.view)
-    V, F, st = fit_step(V, F, maps, a.height, a.lam_now, a.mu, a.agree, a.relax)
+    V, F, st = fit_step(V, F, maps, a.height, a.lam_now, a.mu, a.agree, a.relax, max_step=(a.max_step * a.height if a.max_step else None))
     np.savez(a.out, V=V.astype(np.float32), F=F.astype(np.int32))
     return st
 
@@ -112,8 +112,9 @@ def observe(V, F, maps, H, agree_deg=25.0, vertex=False):
     return tgt, w, cov, fn
 
 
-def fit_step(V, F, maps, H, lam, mu=0.05, agree_deg=25.0, relax=0.3):
-    """one fit iteration in memory (used by the CLI and by the live worker); returns V, F, stats"""
+def fit_step(V, F, maps, H, lam, mu=0.05, agree_deg=25.0, relax=0.3, max_step=None):
+    """one fit iteration in memory (used by the CLI and by the live worker); returns V, F, stats.
+    max_step: no vertex moves farther than this (scene units) in one iteration"""
     t0 = time.time()
     if (fnorm(V, F) * (V[F].mean(1) - V.mean(0))).sum() < 0: F = F[:, [0, 2, 1]]
     nF, nV = len(F), len(V)
@@ -135,6 +136,8 @@ def fit_step(V, F, maps, H, lam, mu=0.05, agree_deg=25.0, relax=0.3):
                         rmatvec=lambda y: A.T @ y[:k1] + LAM * (Lm.T @ y[k1:].reshape(-1, 3)).ravel())
     d = lsqr(op, np.r_[r, np.zeros(3 * nE)], damp=math.sqrt(mu), iter_lim=120, atol=1e-7, btol=1e-7)[0].reshape(-1, 3)
     del A, r
+    if max_step:
+        nd = np.linalg.norm(d, axis=1); d *= np.minimum(1.0, max_step / np.maximum(nd, 1e-12))[:, None]
     rolled = 0
     for _ in range(4):
         bad = np.einsum("ij,ij->i", fnorm(V + d, F), fn) < 0.2
@@ -162,6 +165,7 @@ def main():
     ap.add_argument("--agree", type=float, default=25.0, help="views more than this many degrees off the consensus are dropped")
     ap.add_argument("--relax", type=float, default=0.3, help="tangential relaxation (light remesh) strength, 0 = off")
     ap.add_argument("--subdivide-above", type=float, default=None, help="height fraction: 1->4 split of the faces above (detail zone)")
+    ap.add_argument("--max-step", type=float, default=0.005, help="largest move of any vertex per iteration, fraction of the height (0 = no limit)")
     ap.add_argument("--report", default=None)
     ap.add_argument("--_one", type=float, default=None, help=argparse.SUPPRESS)
     a = ap.parse_args()
@@ -177,7 +181,7 @@ def main():
     for it in range(a.iters):
         lam = lams[min(it, len(lams) - 1)]
         cmd = [sys.executable, os.path.abspath(__file__), work, work] + sum([["--view", v] for v in a.view], []) + \
-              ["--height", str(a.height), "--mu", str(a.mu), "--agree", str(a.agree), "--relax", str(a.relax), "--_one", str(lam)]
+              ["--height", str(a.height), "--mu", str(a.mu), "--agree", str(a.agree), "--relax", str(a.relax), "--max-step", str(a.max_step), "--_one", str(lam)]
         p = subprocess.run(cmd, capture_output=True, text=True)
         if p.returncode != 0:
             print(p.stderr[-2000:], file=sys.stderr); sys.exit(f"iteration {it + 1} failed (out of memory? lower the map resolution or --subdivide-above)")

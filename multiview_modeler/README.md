@@ -120,3 +120,9 @@ Computed on the CPU with numpy and scipy; the GPU is not used for the fit. Refer
 **Fit to normal maps** has its own checkbox in every method. Switch it off to keep the start mesh as it is (for example a clean Hunyuan3D mesh when the baked normal maps are noisy); the silhouette fit and the cleanup still apply.
 
 **Hunyuan3D input.** The background of the colour image is removed before generation: from the alpha channel if the PNG has one, otherwise by flooding the smooth background from the image border (flat colour, gradient, vignette or a soft floor shadow all work; the white eyes and a cream skirt are kept because outlines stop the flood). A PNG with a transparent background from any remover is always the most reliable input.
+
+**Limits on the fits.** Both fits can be bounded so that they cannot ruin a good start mesh:
+- *Fit to silhouettes → Max shift, % height* (default 2): no vertex may end up farther than this from the start mesh. Views whose silhouette does not match the mesh (IoU more than 0.15 below the median) are ignored, and the log lists the IoU of every view.
+- *Fit to normal maps → Max shift per pass, % height* (default 0.5): the largest move of any vertex in one pass, so the total is at most passes x this value.
+
+The normal-map fit follows the maps, noise included. Maps baked from AI-drawn colour views are guesses of 13-21 degrees per view, so on a clean Hunyuan3D mesh the fit adds bumps rather than detail; switch it off there.

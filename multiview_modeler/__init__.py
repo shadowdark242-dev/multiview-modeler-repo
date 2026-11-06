@@ -139,7 +139,7 @@ def params(s, preview):
     return {"max_carve": s.max_carve / 100.0, "carve_above": s.carve_above, "use_carve": s.use_carve, "thin": s.thin,
             "rim": 3, "soft": 0.8, "break_jump": 0.6, "smooth": s.smooth, "smooth_thr": 0.004,
             "fit_iters": (s.iters_preview if (s.use_fit and (s.start_mode != "DEPTH" or s.dn_fit)) else 0) if preview else 0, "lam0": 0.3, "lam1": 0.1, "mu": 0.05,
-            "agree": 25.0, "relax": s.relax, "diag": bool(preview and s.diag != "NONE"),
+            "agree": 25.0, "relax": s.relax, "fit_max": s.fit_max / 100.0, "sil_max": s.sil_max / 100.0, "diag": bool(preview and s.diag != "NONE"),
             "sil_iters": s.sil_iters if s.use_sil else 0, "sil_step": 0.8, "sil_spread": s.sil_spread,
             "sil_smooth": s.sil_smooth, "sil_res": int(512),
             "dn_res": int(s.dn_res_preview if preview else s.dn_res_final), "dn_maps": min(1024, 4 * int(s.dn_res_preview if preview else s.dn_res_final)),
@@ -450,6 +450,10 @@ class MVM_Settings(bpy.types.PropertyGroup):
     use_fit: BoolProperty(name="Fit to normal maps", default=True, update=mark_dirty,
                           description="Off: skip the fit to the normal maps and keep the start mesh as it is (silhouette fit and cleanup still apply). "
                                       "Use it when the maps are noisy and the fit makes a clean start mesh worse")
+    sil_max: FloatProperty(name="Max shift, % height", default=2.0, min=0.2, max=10.0, precision=1, update=mark_dirty,
+                           description="No vertex may end up farther than this from the start mesh after the silhouette fit. Keeps a good start mesh from being melted by silhouettes that disagree")
+    fit_max: FloatProperty(name="Max shift per pass, % height", default=0.5, min=0.05, max=5.0, precision=2, update=mark_dirty,
+                           description="Largest move of any vertex in one fit pass. Total movement is at most passes x this value")
     iters_preview: IntProperty(name="Iterations (preview)", default=1, min=0, max=12, update=mark_dirty)
     iters_final: IntProperty(name="Iterations (final)", default=3, min=0, max=12)
     relax: FloatProperty(name="Remesh (relax)", default=0.3, min=0.0, max=0.6, description="Evens out triangles, removes streaks", update=mark_dirty)
@@ -569,7 +573,7 @@ class MVM_OT_reset(bpy.types.Operator):
         mark_dirty(); return {"FINISHED"}
 
 
-_FIT = ("use_fit", "use_sil", "sil_iters", "sil_spread", "sil_smooth", "iters_preview", "iters_final", "relax", "use_detail", "detail_above",
+_FIT = ("use_fit", "use_sil", "sil_max", "fit_max", "sil_iters", "sil_spread", "sil_smooth", "iters_preview", "iters_final", "relax", "use_detail", "detail_above",
         "fit_res_preview", "fit_res_final")
 METHOD_PROPS = {
     "VOLUME": ("res_preview", "res_final", "max_carve", "use_carve", "carve_above", "thin", "smooth") + _FIT,
@@ -657,7 +661,7 @@ class MVM_OT_build(bpy.types.Operator):
             lams = ",".join(f"{0.3 + (0.1 - 0.3) * (k / max(1, n - 1)):.3f}" for k in range(n))
             fit = [py, os.path.join(CORE, "multiview_fit.py"), os.path.join(wd, "underlay.npz"), os.path.join(wd, "fit.npz"),
                    "--height", str(s.height), "--iters", str(n), "--lam", lams, "--mu", str(0.05), "--agree", str(25.0),
-                   "--relax", str(s.relax), "--report", os.path.join(wd, "fit.json")]
+                   "--relax", str(s.relax), "--max-step", str(s.fit_max / 100.0), "--report", os.path.join(wd, "fit.json")]
             for v in views:
                 if v["enabled"]:
                     fit += ["--view", f"{v['angle']:g}:{os.path.join(al, 'n_%d.png' % int(v['angle']))}"]
@@ -1111,14 +1115,14 @@ def _method_header(panel, context, mode):
 def _sil_box(L, s):
     b = L.box(); b.prop(s, "use_sil", text="Fit to silhouettes")
     c = b.column(); c.enabled = s.use_sil
-    c.prop(s, "sil_iters"); c.prop(s, "sil_spread"); c.prop(s, "sil_smooth")
+    c.prop(s, "sil_iters"); c.prop(s, "sil_spread"); c.prop(s, "sil_smooth"); c.prop(s, "sil_max")
 
 
 def _fit_box(L, s):
     b = L.box(); b.prop(s, "use_fit", text="Fit to normal maps")
     c = b.column(); c.enabled = s.use_fit
     r = c.row(align=True); r.prop(s, "iters_preview", text="Preview"); r.prop(s, "iters_final", text="Final")
-    c.prop(s, "relax", slider=True)
+    c.prop(s, "fit_max", slider=True); c.prop(s, "relax", slider=True)
     r = c.row(); r.prop(s, "use_detail"); r.prop(s, "detail_above", slider=True)
 
 

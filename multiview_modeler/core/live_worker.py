@@ -441,13 +441,18 @@ def sil_fit(B, req, V, F, log=say):
         B.sil_iou = None; return V, F
     SR = int(p.get("sil_res", 512)); masks = {a: m for a, (m, _) in B.views_at(req, SR, SR).items()}
     h = hashlib.md5(np.ascontiguousarray(V[::53], np.float32).tobytes() + np.int64(len(V)).tobytes()).hexdigest()
-    key = (h, tuple(sorted(B.keys.items())), its, p.get("sil_step"), p.get("sil_spread"), p.get("sil_smooth"), SR)
+    key = (h, tuple(sorted(B.keys.items())), its, p.get("sil_step"), p.get("sil_spread"), p.get("sil_smooth"), p.get("sil_max"), SR)
     c = getattr(B, "_sil", None)
     if c and c[0] == key:
         return c[1].copy(), F
-    before = np.mean(list(sf.iou(masks, V, F, H).values()))
+    per = sf.iou(masks, V, F, H); before = np.mean(list(per.values()))
+    log("STATUS silhouette IoU per view: " + ", ".join(f"{int(a)}:{v:.2f}" for a, v in sorted(per.items())))
+    med = float(np.median(list(per.values()))); bad = [a for a, v in per.items() if v < med - 0.15]
+    if bad and len(bad) < len(per):                          # a view that disagrees with the rest would drag the mesh the wrong way
+        log("STATUS silhouette fit ignores views that do not match the mesh: " + ", ".join(str(int(a)) for a in sorted(bad)))
+        masks = {a: m for a, m in masks.items() if a not in bad}
     V, sc = sf.conform(V, F, masks, H, iters=its, step=float(p.get("sil_step", 0.8)), spread=int(p.get("sil_spread", 40)),
-                       smooth=int(p.get("sil_smooth", 2)), log=log)
+                       smooth=int(p.get("sil_smooth", 2)), max_shift=float(p.get("sil_max", 0.02)) * H, log=log)
     after = float(np.mean(list(sc.values()))); log(f"STATUS silhouette IoU {before:.3f} -> {after:.3f}")
     B._sil = (key, V.copy()); B.sil_iou = (round(float(before), 3), round(after, 3))
     return V, F
@@ -514,7 +519,7 @@ def live():
                         break
                     lam = p["lam0"] + (p["lam1"] - p["lam0"]) * (k / max(1, its - 1))
                     say(f"STATUS fit {k + 1}/{its}")
-                    V, F, s_ = mvf.fit_step(V, F, maps, H, lam, p["mu"], p["agree"], p["relax"])
+                    V, F, s_ = mvf.fit_step(V, F, maps, H, lam, p["mu"], p["agree"], p["relax"], max_step=float(p.get("fit_max", 0.005)) * H)
                     st["faces_vs_maps_deg"] = s_["median_face_vs_maps_deg"]
                 st["folded_pct"] = round(100 * mvf.folded_share(V, F), 2)
             V, F = cleanup(V, F, B, H, p)

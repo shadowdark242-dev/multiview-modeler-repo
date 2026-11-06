@@ -67,8 +67,9 @@ def iou(masks, V, F, H):
     return out
 
 
-def conform(V, F, masks, H, iters=12, step=0.6, spread=25, smooth=2, contour_cos=0.35, max_px=6.0, log=None):
-    V = np.asarray(V, np.float64).copy(); F = np.asarray(F, np.int64); n = len(V)
+def conform(V, F, masks, H, iters=12, step=0.6, spread=25, smooth=2, contour_cos=0.35, max_px=6.0, max_shift=None, log=None):
+    """max_shift: no vertex may end up farther than this (scene units) from where it started"""
+    V = np.asarray(V, np.float64).copy(); F = np.asarray(F, np.int64); n = len(V); V0 = V.copy()
     A, deg = adjacency(F, n)
     sd = {a: signed_distance(m) for a, m in masks.items()}
     grad = {a: np.gradient(ndimage.gaussian_filter(s, 1.0)) for a, s in sd.items()}      # (d/drow, d/dcol)
@@ -101,6 +102,8 @@ def conform(V, F, masks, H, iters=12, step=0.6, spread=25, smooth=2, contour_cos
         for _ in range(smooth):
             for lam in (0.5, -0.53):
                 V += lam * (A @ V / deg[:, None] - V)
+        if max_shift:
+            dv = V - V0; nn = np.linalg.norm(dv, axis=1); V = V0 + dv * np.minimum(1.0, max_shift / np.maximum(nn, 1e-12))[:, None]
         if log:
             sc = iou(masks, V, F, H); log(f"STATUS silhouette fit {it + 1}/{iters}, IoU {np.mean(list(sc.values())):.3f}")
     return V, iou(masks, V, F, H)
