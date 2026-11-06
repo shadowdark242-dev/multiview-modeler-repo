@@ -139,7 +139,7 @@ def params(s, preview):
     return {"max_carve": s.max_carve / 100.0, "carve_above": s.carve_above, "use_carve": s.use_carve, "thin": s.thin,
             "rim": 3, "soft": 0.8, "break_jump": 0.6, "smooth": s.smooth, "smooth_thr": 0.004,
             "fit_iters": (s.iters_preview if (s.use_fit and (s.start_mode != "DEPTH" or s.dn_fit)) else 0) if preview else 0, "lam0": 0.3, "lam1": 0.1, "mu": 0.05,
-            "agree": 25.0, "relax": s.relax, "fit_max": s.fit_max / 100.0, "sil_max": s.sil_max / 100.0, "diag": bool(preview and s.diag != "NONE"),
+            "agree": 25.0, "relax": s.relax, "fit_max": s.fit_max / 100.0, "sil_front": bool(s.sil_front_only), "sil_max": s.sil_max / 100.0, "diag": bool(preview and s.diag != "NONE"),
             "sil_iters": s.sil_iters if s.use_sil else 0, "sil_step": 0.8, "sil_spread": s.sil_spread,
             "sil_smooth": s.sil_smooth, "sil_res": int(512),
             "dn_res": int(s.dn_res_preview if preview else s.dn_res_final), "dn_maps": min(1024, 4 * int(s.dn_res_preview if preview else s.dn_res_final)),
@@ -450,6 +450,8 @@ class MVM_Settings(bpy.types.PropertyGroup):
     use_fit: BoolProperty(name="Fit to normal maps", default=True, update=mark_dirty,
                           description="Off: skip the fit to the normal maps and keep the start mesh as it is (silhouette fit and cleanup still apply). "
                                       "Use it when the maps are noisy and the fit makes a clean start mesh worse")
+    sil_front_only: BoolProperty(name="Front view only", default=False, update=mark_dirty,
+                                 description="Fit to the silhouette of view 0 only. Use it for a Hunyuan3D start mesh: it was made from the front image, so only the front silhouette is consistent with it; the other views are guesses and pull the mesh out of shape")
     sil_max: FloatProperty(name="Max shift, % height", default=2.0, min=0.2, max=10.0, precision=1, update=mark_dirty,
                            description="No vertex may end up farther than this from the start mesh after the silhouette fit. Keeps a good start mesh from being melted by silhouettes that disagree")
     fit_max: FloatProperty(name="Max shift per pass, % height", default=0.5, min=0.05, max=5.0, precision=2, update=mark_dirty,
@@ -573,7 +575,7 @@ class MVM_OT_reset(bpy.types.Operator):
         mark_dirty(); return {"FINISHED"}
 
 
-_FIT = ("use_fit", "use_sil", "sil_max", "fit_max", "sil_iters", "sil_spread", "sil_smooth", "iters_preview", "iters_final", "relax", "use_detail", "detail_above",
+_FIT = ("use_fit", "use_sil", "sil_front_only", "sil_max", "fit_max", "sil_iters", "sil_spread", "sil_smooth", "iters_preview", "iters_final", "relax", "use_detail", "detail_above",
         "fit_res_preview", "fit_res_final")
 METHOD_PROPS = {
     "VOLUME": ("res_preview", "res_final", "max_carve", "use_carve", "carve_above", "thin", "smooth") + _FIT,
@@ -1115,7 +1117,7 @@ def _method_header(panel, context, mode):
 def _sil_box(L, s):
     b = L.box(); b.prop(s, "use_sil", text="Fit to silhouettes")
     c = b.column(); c.enabled = s.use_sil
-    c.prop(s, "sil_iters"); c.prop(s, "sil_spread"); c.prop(s, "sil_smooth"); c.prop(s, "sil_max")
+    c.prop(s, "sil_iters"); c.prop(s, "sil_spread"); c.prop(s, "sil_smooth"); c.prop(s, "sil_max"); c.prop(s, "sil_front_only")
 
 
 def _fit_box(L, s):

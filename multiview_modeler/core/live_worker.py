@@ -441,10 +441,16 @@ def sil_fit(B, req, V, F, log=say):
         B.sil_iou = None; return V, F
     SR = int(p.get("sil_res", 512)); masks = {a: m for a, (m, _) in B.views_at(req, SR, SR).items()}
     h = hashlib.md5(np.ascontiguousarray(V[::53], np.float32).tobytes() + np.int64(len(V)).tobytes()).hexdigest()
-    key = (h, tuple(sorted(B.keys.items())), its, p.get("sil_step"), p.get("sil_spread"), p.get("sil_smooth"), p.get("sil_max"), SR)
+    key = (h, tuple(sorted(B.keys.items())), its, p.get("sil_step"), p.get("sil_spread"), p.get("sil_smooth"), p.get("sil_max"), bool(p.get("sil_front")), SR)
     c = getattr(B, "_sil", None)
     if c and c[0] == key:
         return c[1].copy(), F
+    if p.get("sil_front"):                                   # a generated start mesh agrees with the front image only
+        front = {a: m for a, m in masks.items() if float(a) == 0.0}
+        if front:
+            masks = front; log("STATUS silhouette fit uses the front view only")
+        else:
+            log("STATUS front view (0) is not enabled: silhouette fit uses all views")
     per = sf.iou(masks, V, F, H); before = np.mean(list(per.values()))
     log("STATUS silhouette IoU per view: " + ", ".join(f"{int(a)}:{v:.2f}" for a, v in sorted(per.items())))
     med = float(np.median(list(per.values()))); bad = [a for a, v in per.items() if v < med - 0.15]

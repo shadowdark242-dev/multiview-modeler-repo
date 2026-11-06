@@ -123,6 +123,7 @@ Computed on the CPU with numpy and scipy; the GPU is not used for the fit. Refer
 
 **Limits on the fits.** Both fits can be bounded so that they cannot ruin a good start mesh:
 - *Fit to silhouettes → Max shift, % height* (default 2): no vertex may end up farther than this from the start mesh. Views whose silhouette does not match the mesh (IoU more than 0.15 below the median) are ignored, and the log lists the IoU of every view.
+- *Fit to silhouettes → Front view only*: fit to the silhouette of view 0 alone. Use it with a Hunyuan3D start mesh, which agrees with the front image only.
 - *Fit to normal maps → Max shift per pass, % height* (default 0.5): the largest move of any vertex in one pass, so the total is at most passes x this value.
 
 The normal-map fit follows the maps, noise included. Maps baked from AI-drawn colour views are guesses of 13-21 degrees per view, so on a clean Hunyuan3D mesh the fit adds bumps rather than detail; switch it off there.
