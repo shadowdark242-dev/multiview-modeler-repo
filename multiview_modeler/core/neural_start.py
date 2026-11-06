@@ -3,7 +3,7 @@
   python neural_start.py --image front.png --out raw.npz --repo HUNYUAN_DIR [--variant mini|std|mv] [--fg-ratio 0.85] [--octree 256]
             [--steps 30] [--image-left left.png --image-back back.png]   (mv = three views)
 
-The background is cut with the silhouette of the image itself (alpha, or the flat border colour), so rembg is not needed.
+The background is cut by the image itself (alpha, or a smooth-background flood from the border: flat colour, gradient or soft shadow), so rembg is not needed.
 Variants: mini (Hunyuan3D-2mini, lightest), std (Hunyuan3D-2, 6 GB for the shape), mv (Hunyuan3D-2mv, front + left + back).
 Output: raw.npz with V (any orientation / scale - align_start fixes it), F, optional C (vertex colours 0..1).
 """
@@ -17,18 +17,39 @@ def say(*a):
     print(*a, flush=True)
 
 
-def cut_background(path, tol=28):
-    im = np.asarray(Image.open(path).convert("RGBA")).astype(np.float32)
-    if im[..., 3].min() < 250:
-        m = im[..., 3] > 127
-    else:
-        rgb = im[..., :3]; edge = np.r_[rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]]; bg = np.median(edge, 0)
-        near = np.abs(rgb - bg).sum(-1) < tol; lab, _ = ndimage.label(near)
-        border = set(np.unique(np.r_[lab[0], lab[-1], lab[:, 0], lab[:, -1]])) - {0}
-        m = ~np.isin(lab, list(border))
+def background_mask(rgb, step=6.0, band=2, band_tol=30.0, work=512):
+    """foreground mask of an image on a smooth background (flat colour, gradient, vignette, soft floor shadow).
+    The background is the smooth region that touches the image border: pixels whose neighbour-to-neighbour colour change
+    stays under `step` (after a light blur). Edges of the character stop it, so the white eyes or a cream skirt are kept.
+    A thin band at the outline that still matches the nearby background colour is then removed. Analysed at `work` px."""
+    h0, w0 = rgb.shape[:2]; sc = min(1.0, work / max(h0, w0))
+    im = np.asarray(Image.fromarray(rgb).resize((max(8, round(w0 * sc)), max(8, round(h0 * sc))), Image.LANCZOS)).astype(np.float32) if sc < 1 else rgb.astype(np.float32)
+    sm = np.stack([ndimage.gaussian_filter(im[..., c], 1.0) for c in range(3)], -1)
+    gy = np.abs(np.diff(sm, axis=0)).sum(-1); gx = np.abs(np.diff(sm, axis=1)).sum(-1); g = np.zeros(sm.shape[:2], np.float32)
+    g[:-1] = np.maximum(g[:-1], gy); g[1:] = np.maximum(g[1:], gy); g[:, :-1] = np.maximum(g[:, :-1], gx); g[:, 1:] = np.maximum(g[:, 1:], gx)
+    lab, _ = ndimage.label(g < step)
+    bg = np.isin(lab, list(set(np.unique(np.r_[lab[0], lab[-1], lab[:, 0], lab[:, -1]])) - {0}))
+    for _ in range(3):                                     # eat the outline fringe that is still background-coloured
+        if not bg.any() or bg.all():
+            break
+        d, (iy, ix) = ndimage.distance_transform_edt(~bg, return_indices=True)
+        near = (d > 0) & (d <= band) & (np.abs(sm - sm[iy, ix]).sum(-1) < band_tol)
+        if not near.any():
+            break
+        bg |= near
+    m = ~bg
     m = ndimage.binary_opening(m, iterations=1); lab, n = ndimage.label(m)
     if n:
-        m = lab == (np.argmax(ndimage.sum(m, lab, range(1, n + 1))) + 1)
+        m = ndimage.binary_fill_holes(lab == (np.argmax(ndimage.sum(m, lab, range(1, n + 1))) + 1))
+    if sc < 1:
+        m = np.asarray(Image.fromarray(m.astype(np.uint8) * 255).resize((w0, h0), Image.BILINEAR)) > 127
+    return m
+
+
+def cut_background(path):
+    """RGBA image with the background removed: the alpha channel if the file has one, otherwise background_mask()"""
+    im = np.asarray(Image.open(path).convert("RGBA")).astype(np.float32)
+    m = im[..., 3] > 127 if im[..., 3].min() < 250 else background_mask(im[..., :3].astype(np.uint8))
     out = im.copy(); out[..., 3] = m * 255
     return Image.fromarray(out.astype(np.uint8), "RGBA")
 

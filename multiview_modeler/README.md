@@ -118,3 +118,5 @@ Computed on the CPU with numpy and scipy; the GPU is not used for the fit. Refer
 - The input views must agree with each other. The fit discards single disagreeing pixels but cannot repair a view that contradicts the others as a whole.
 
 **Fit to normal maps** has its own checkbox in every method. Switch it off to keep the start mesh as it is (for example a clean Hunyuan3D mesh when the baked normal maps are noisy); the silhouette fit and the cleanup still apply.
+
+**Hunyuan3D input.** The background of the colour image is removed before generation: from the alpha channel if the PNG has one, otherwise by flooding the smooth background from the image border (flat colour, gradient, vignette or a soft floor shadow all work; the white eyes and a cream skirt are kept because outlines stop the flood). A PNG with a transparent background from any remover is always the most reliable input.
