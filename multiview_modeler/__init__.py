@@ -138,7 +138,7 @@ def view_list(s):
 def params(s, preview):
     return {"max_carve": s.max_carve / 100.0, "carve_above": s.carve_above, "use_carve": s.use_carve, "thin": s.thin,
             "rim": 3, "soft": 0.8, "break_jump": 0.6, "smooth": s.smooth, "smooth_thr": 0.004,
-            "fit_iters": (s.iters_preview if (s.start_mode != "DEPTH" or s.dn_fit) else 0) if preview else 0, "lam0": 0.3, "lam1": 0.1, "mu": 0.05,
+            "fit_iters": (s.iters_preview if (s.use_fit and (s.start_mode != "DEPTH" or s.dn_fit)) else 0) if preview else 0, "lam0": 0.3, "lam1": 0.1, "mu": 0.05,
             "agree": 25.0, "relax": s.relax, "diag": bool(preview and s.diag != "NONE"),
             "sil_iters": s.sil_iters if s.use_sil else 0, "sil_step": 0.8, "sil_spread": s.sil_spread,
             "sil_smooth": s.sil_smooth, "sil_res": int(512),
@@ -447,6 +447,9 @@ class MVM_Settings(bpy.types.PropertyGroup):
     # fit
     fit_res_preview: EnumProperty(name="Maps (preview)", items=[("512", "512", ""), ("1024", "1024", "")], default="512", update=mark_dirty)
     fit_res_final: EnumProperty(name="Maps (final)", items=[("1024", "1024", ""), ("2048", "2048", "")], default="1024")
+    use_fit: BoolProperty(name="Fit to normal maps", default=True, update=mark_dirty,
+                          description="Off: skip the fit to the normal maps and keep the start mesh as it is (silhouette fit and cleanup still apply). "
+                                      "Use it when the maps are noisy and the fit makes a clean start mesh worse")
     iters_preview: IntProperty(name="Iterations (preview)", default=1, min=0, max=12, update=mark_dirty)
     iters_final: IntProperty(name="Iterations (final)", default=3, min=0, max=12)
     relax: FloatProperty(name="Remesh (relax)", default=0.3, min=0.0, max=0.6, description="Evens out triangles, removes streaks", update=mark_dirty)
@@ -566,7 +569,7 @@ class MVM_OT_reset(bpy.types.Operator):
         mark_dirty(); return {"FINISHED"}
 
 
-_FIT = ("use_sil", "sil_iters", "sil_spread", "sil_smooth", "iters_preview", "iters_final", "relax", "use_detail", "detail_above",
+_FIT = ("use_fit", "use_sil", "sil_iters", "sil_spread", "sil_smooth", "iters_preview", "iters_final", "relax", "use_detail", "detail_above",
         "fit_res_preview", "fit_res_final")
 METHOD_PROPS = {
     "VOLUME": ("res_preview", "res_final", "max_carve", "use_carve", "carve_above", "thin", "smooth") + _FIT,
@@ -649,7 +652,7 @@ class MVM_OT_build(bpy.types.Operator):
         with open(jp, "w", encoding="utf-8") as f:
             json.dump(job, f, indent=1)
         cmds = [[py, os.path.join(CORE, "live_worker.py"), "--final", jp]]
-        n = s.iters_final if (s.start_mode != "DEPTH" or s.dn_fit) else 0
+        n = s.iters_final if (s.use_fit and (s.start_mode != "DEPTH" or s.dn_fit)) else 0
         if n > 0:
             lams = ",".join(f"{0.3 + (0.1 - 0.3) * (k / max(1, n - 1)):.3f}" for k in range(n))
             fit = [py, os.path.join(CORE, "multiview_fit.py"), os.path.join(wd, "underlay.npz"), os.path.join(wd, "fit.npz"),
@@ -1112,10 +1115,11 @@ def _sil_box(L, s):
 
 
 def _fit_box(L, s):
-    b = L.box(); b.label(text="Fit to normal maps")
-    r = b.row(align=True); r.prop(s, "iters_preview", text="Preview"); r.prop(s, "iters_final", text="Final")
-    b.prop(s, "relax", slider=True)
-    r = b.row(); r.prop(s, "use_detail"); r.prop(s, "detail_above", slider=True)
+    b = L.box(); b.prop(s, "use_fit", text="Fit to normal maps")
+    c = b.column(); c.enabled = s.use_fit
+    r = c.row(align=True); r.prop(s, "iters_preview", text="Preview"); r.prop(s, "iters_final", text="Final")
+    c.prop(s, "relax", slider=True)
+    r = c.row(); r.prop(s, "use_detail"); r.prop(s, "detail_above", slider=True)
 
 
 class MVM_PT_m_volume(_P, bpy.types.Panel):

@@ -116,3 +116,5 @@ Computed on the CPU with numpy and scipy; the GPU is not used for the fit. Refer
 - What no view sees is completed smoothly.
 - Thin parts below the carve limit keep only their silhouette.
 - The input views must agree with each other. The fit discards single disagreeing pixels but cannot repair a view that contradicts the others as a whole.
+
+**Fit to normal maps** has its own checkbox in every method. Switch it off to keep the start mesh as it is (for example a clean Hunyuan3D mesh when the baked normal maps are noisy); the silhouette fit and the cleanup still apply.
